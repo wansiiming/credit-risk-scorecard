@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.log
+*.pkl
+*.joblib
+data/
+output/
+.DS_Store
+Thumbs.db
