@@ -1,15 +1,25 @@
 import pandas as pd
 import numpy as np
 import os
+import sys
+import argparse
 import warnings
 
 warnings.filterwarnings('ignore')
 
 # 设置中文字体显示
+import matplotlib
+
+matplotlib.use('Agg')  # 无图形界面环境（如 Linux 服务器）也能保存图片
 import matplotlib.pyplot as plt
 
+# 脚本所在目录，作为相对路径的基准，保证在任何机器、任何工作目录下都能找到文件
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 try:
-    plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
+    # 按顺序回退，Windows 用 SimHei，Linux 用 Noto / 文泉驿
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Noto Sans CJK SC',
+                                       'WenQuanYi Zen Hei', 'Arial Unicode MS', 'DejaVu Sans']
     plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
 except:
     pass
@@ -149,7 +159,7 @@ def monotonic_binning(df, feature, target, max_bins=8):
     return best_result, best_iv, best_n_bins, best_bins
 
 
-def analyze_feature_binning(df, feature, target):
+def analyze_feature_binning(df, feature, target, out_dir=None):
     """
     分析单个特征的分箱
     """
@@ -173,18 +183,112 @@ def analyze_feature_binning(df, feature, target):
 
     print(f"  ✓ IV值: {iv:.6f}, 分箱数: {n_bins}")
 
+    # 保存该特征的分箱图
+    if out_dir is not None:
+        image_path = plot_feature_binning(df, feature, bins_series, out_dir)
+        if image_path is not None:
+            print(f"  ✓ 分箱图: {os.path.basename(image_path)}")
+
     return feature_result
 
 
+def plot_feature_binning(df, feature, bins_series, out_dir):
+    """
+    绘制单个特征各分箱的数值分布箱线图，保存为 PNG
+    """
+    plot_df = pd.DataFrame({
+        feature: df.loc[bins_series.index, feature].values,
+        '分箱': bins_series.astype(str).values
+    })
+
+    # 保持分箱顺序
+    categories = list(dict.fromkeys(plot_df['分箱'].tolist()))
+    groups = [plot_df.loc[plot_df['分箱'] == c, feature].dropna().values for c in categories]
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+    ax.boxplot(groups)
+    ax.set_xticks(range(1, len(categories) + 1))
+    ax.set_xticklabels(categories, rotation=45, ha='right')
+    ax.set_title(f"{feature} - 数值分布", fontsize=14)
+    ax.set_xlabel("分箱")
+    ax.set_ylabel(feature)
+    fig.tight_layout()
+
+    os.makedirs(out_dir, exist_ok=True)
+    safe_name = str(feature).replace(os.sep, '_').replace('/', '_')
+    image_path = os.path.join(out_dir, f"{safe_name}_分箱分析.png")
+    fig.savefig(image_path, dpi=100)
+    plt.close(fig)
+
+    return image_path
+
+
+def generate_demo_data(data_path):
+    """
+    数据文件不存在时，生成一份带违约标签的合成信贷数据
+    """
+    rng = np.random.default_rng(2026)
+    n = 2000
+
+    age = np.clip(rng.normal(38, 9, n), 18, 70).round(0)
+    income = np.clip(rng.lognormal(np.log(12000), 0.45, n), 3000, 50000).round(0)
+    debt_ratio = np.clip(rng.beta(2.2, 4.0, n), 0.02, 0.95).round(3)
+    utilization = np.clip(rng.beta(2.0, 2.5, n), 0.0, 1.2).round(3)
+    delinquencies = np.clip(rng.poisson(0.8, n), 0, 6)
+
+    # 用逻辑回归式的潜在分数生成违约标签，保证特征与违约率有合理相关性
+    age_scaled = (age - 18) / 52.0
+    income_scaled = (income - 3000) / 47000.0
+    logit = (-5.2 + 2.4 * debt_ratio + 1.8 * utilization + 0.6 * delinquencies
+             + 1.1 * (1 - income_scaled) + 0.8 * (1 - age_scaled))
+    prob = 1 / (1 + np.exp(-logit))
+    default = rng.binomial(1, prob)
+
+    df = pd.DataFrame({
+        '年龄': age.astype(int),
+        '月收入': income.astype(int),
+        '负债收入比': debt_ratio,
+        '信用使用率': utilization,
+        '历史逾期次数': delinquencies.astype(int),
+        '违约标签': default,
+    })
+
+    data_dir = os.path.dirname(data_path)
+    if data_dir:
+        os.makedirs(data_dir, exist_ok=True)
+    df.to_csv(data_path, index=False, encoding='utf-8')
+
+    print(f"已生成演示数据: {data_path}")
+    print(f"样本数: {len(df)}, 违约率: {df['违约标签'].mean():.2%}")
+
+    return df
+
+
 # 主程序
-def main():
+def main(data_path="data/credit_demo.csv", out_dir="结果示例/演示", demo=False):
     print("=" * 80)
     print("开始分箱分析")
     print("=" * 80)
 
+    # 相对路径以脚本所在目录为基准，避免依赖当前工作目录
+    if not os.path.isabs(data_path):
+        data_path = os.path.join(BASE_DIR, data_path)
+    if not os.path.isabs(out_dir):
+        out_dir = os.path.join(BASE_DIR, out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+
     # 加载数据
-    file_path = r"C:\Users\王子鸣\OneDrive\桌面\数据集分割结果\测试集.csv"
-    print(f"加载数据文件: {file_path}")
+    print(f"加载数据文件: {data_path}")
+
+    # 演示模式：数据文件不存在时生成合成数据
+    if demo and not os.path.exists(data_path):
+        print("未找到数据文件，生成演示数据...")
+        generate_demo_data(data_path)
+
+    if not os.path.exists(data_path):
+        print("错误: 数据文件不存在")
+        print("提示: 加 --demo 可自动生成演示数据，或用 --data 指定 CSV 路径")
+        return None, None
 
     # 尝试多种编码方式加载数据
     encodings = ['utf-8', 'gbk', 'gb2312', 'latin1', 'cp1252']
@@ -192,7 +296,7 @@ def main():
 
     for encoding in encodings:
         try:
-            df = pd.read_csv(file_path, encoding=encoding)
+            df = pd.read_csv(data_path, encoding=encoding)
             print(f"使用编码 {encoding} 成功加载数据")
             break
         except Exception as e:
@@ -207,7 +311,8 @@ def main():
 
     # 识别目标变量
     target_column = None
-    target_candidates = ['y', 'target', 'label', 'class', 'is_default', 'default', 'bad', 'good', 'result', 'flag']
+    target_candidates = ['y', 'target', 'label', 'class', 'is_default', 'default', 'bad', 'good', 'result', 'flag',
+                         '违约']
 
     for col in df.columns:
         col_lower = col.lower()
@@ -256,7 +361,7 @@ def main():
     iv_values = []
 
     for feature in numeric_features[:50]:  # 限制分析前50个特征，防止太多
-        result = analyze_feature_binning(df, feature, target_column)
+        result = analyze_feature_binning(df, feature, target_column, out_dir=out_dir)
         if result is not None and result['IV值'] >= 0:
             all_results.append(result)
             iv_values.append((feature, result['IV值']))
@@ -288,16 +393,13 @@ def main():
 
     # 保存结果
     print("\n" + "=" * 80)
-    print("保存分析结果到桌面...")
+    print("保存分析结果...")
 
-    # 获取桌面路径
-    desktop_path = get_desktop_path()
-    print(f"桌面路径: {desktop_path}")
-
-    # 创建保存结果的文件夹（使用中文名称）
-    results_folder = os.path.join(desktop_path, "分箱分析结果")
+    # 表格与报告放到 output 目录（已在 .gitignore 中），分箱图放到 --out 目录
+    results_folder = os.path.join(BASE_DIR, "output")
     os.makedirs(results_folder, exist_ok=True)
     print(f"结果保存到: {results_folder}")
+    print(f"分箱图保存到: {out_dir}")
 
     # 1. 保存IV值排名
     if iv_ranking:
@@ -415,7 +517,7 @@ def main():
         f.write("=" * 80 + "\n\n")
 
         f.write(f"分析时间: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"数据文件: {os.path.basename(file_path)}\n")
+        f.write(f"数据文件: {os.path.basename(data_path)}\n")
         f.write(f"数据形状: {df.shape[0]} 行 × {df.shape[1]} 列\n")
         f.write(f"目标变量: {target_column}\n\n")
 
@@ -552,6 +654,7 @@ def main():
         print("3. 需要调整分箱参数")
 
     print(f"\n所有结果已保存到: {results_folder}")
+    print(f"所有分箱图已保存到: {out_dir}")
     print("包含以下文件:")
     print("  1. IV值排名.xlsx - 所有特征的IV值排序")
     print("  2. 显著特征分箱详情.xlsx - 重要特征的详细分箱信息")
@@ -563,6 +666,26 @@ def main():
     return all_results, significant_features
 
 
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="信贷数据分箱分析：WOE / IV 与单调分箱")
+    parser.add_argument("--data", default="data/credit_demo.csv",
+                        help="输入 CSV 路径，默认 data/credit_demo.csv")
+    parser.add_argument("--out", default="结果示例/演示",
+                        help="分箱图输出目录，默认 结果示例/演示")
+    parser.add_argument("--demo", action="store_true",
+                        help="数据文件不存在时，按固定随机种子生成合成信贷数据")
+    return parser.parse_args(argv)
+
+
+def pause():
+    """交互式终端下等待用户查看结果，非交互环境（脚本/管道/CI）直接跳过。"""
+    try:
+        if sys.stdin.isatty():
+            input("\n按Enter键退出程序...")
+    except (EOFError, OSError):
+        pass
+
+
 # 运行主程序
 if __name__ == "__main__":
     print("分箱分析工具 v1.0")
@@ -570,11 +693,13 @@ if __name__ == "__main__":
     print("功能: 对数据集进行分箱分析，计算WOE和IV值")
     print("=" * 80)
 
-    try:
-        all_results, significant_features = main()
+    args = parse_args()
 
-        # 等待用户查看结果
-        input("\n按Enter键退出程序...")
+    try:
+        all_results, significant_features = main(args.data, args.out, args.demo)
+
+        # 交互式终端下等待用户查看结果，脚本/管道运行时不阻塞
+        pause()
 
     except Exception as e:
         print(f"\n程序执行出错: {str(e)}")
@@ -589,4 +714,4 @@ if __name__ == "__main__":
         print("3. 检查数据文件编码")
         print("4. 确保有足够的磁盘空间")
 
-        input("\n按Enter键退出程序...")
+        pause()
