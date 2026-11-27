@@ -7,6 +7,8 @@ venv/
 *.pkl
 *.joblib
 data/
+data/credit_demo.csv
 output/
+结果示例/演示/
 .DS_Store
 Thumbs.db
